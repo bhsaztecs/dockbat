@@ -213,7 +213,6 @@ fn compile(inputs: Inputs, ctypes: CompileType, debug: bool) -> Result<(), Strin
     let mut args: Vec<String> = Vec::new();
     args.extend(
         [
-            "docker",
             "run",
             "-it",
             "--rm",
@@ -231,8 +230,10 @@ fn compile(inputs: Inputs, ctypes: CompileType, debug: bool) -> Result<(), Strin
     }
     args.extend(inputs.to_args());
     args.extend(ctypes.to_args());
-    //println!("{}", args.join(" "));
-    todo!()
+    if let Err(e) = Command::new("docker").args(&args).status() {
+        return Err(format!("Error on compile: {}", e));
+    }
+    Ok(())
 }
 fn copy_files(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
     if let Err(e) = Command::new("ping").arg("-c").arg("1").output() {
