@@ -226,16 +226,28 @@ fn compile(inputs: Inputs, ctypes: CompileType, debug: bool) -> Result<(), Strin
         .iter()
         .map(|x| x.to_string()),
     );
-    args.extend(inputs.to_args());
-    args.extend(ctypes.to_args());
     if debug {
         args.push("-g".to_string())
     }
+    args.extend(inputs.to_args());
+    args.extend(ctypes.to_args());
     //println!("{}", args.join(" "));
     todo!()
 }
 fn copy_files(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
-    todo!()
+    if let Err(e) = Command::new("ping").arg("-c").arg("1").output() {
+        return Err(format!("Error on ping: {}", e));
+    }
+    if let Err(e) = Command::new("scp")
+        .arg("-r")
+        .arg("-q")
+        .arg(from.as_os_str())
+        .arg(format!("\"kipr@192.168.125.1:{}\"", to.display()))
+        .output()
+    {
+        return Err(format!("Error on send: {}", e));
+    }
+    Ok(())
 }
 fn shell() -> Result<(), String> {
     todo!()
