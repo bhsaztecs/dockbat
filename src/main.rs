@@ -4,24 +4,40 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::Command;
 struct Inputs {
-    infiles: Vec<std::fs::File>,
+    infiles: Vec<std::path::PathBuf>,
     libs: Vec<String>,
     warnings: Vec<String>,
-    outfile: std::fs::File,
+    outfile: std::path::PathBuf,
 }
 impl Inputs {
     fn builder() -> InputsBuilder {
         InputsBuilder::new()
     }
-    fn inputs_to_args(self) -> Vec<String> {
-        todo!()
+    fn to_args(self) -> Vec<String> {
+        let mut args: Vec<String> = Vec::new();
+        for infile in self.infiles {
+            let path_str = infile.to_string_lossy().to_string();
+            if path_str.contains(".h") || path_str.contains(".hpp") {
+                args.push(format!("-I{}", infile.display()));
+            } else if path_str.contains(".c") || path_str.contains(".cpp") {
+                args.push(format!("{} ", infile.display()));
+            }
+        }
+        for lib in self.libs {
+            args.push(format!("-l{}", lib));
+        }
+        for warning in self.warnings {
+            args.push(format!("-W{}", warning));
+        }
+        args.push(format!("-o {}", self.outfile.display()));
+        args
     }
 }
 struct InputsBuilder {
-    infiles: Option<Vec<std::fs::File>>,
+    infiles: Option<Vec<std::path::PathBuf>>,
     libs: Option<Vec<String>>,
     warnings: Option<Vec<String>>,
-    outfile: Option<std::fs::File>,
+    outfile: Option<std::path::PathBuf>,
 }
 impl InputsBuilder {
     fn new() -> InputsBuilder {
@@ -32,20 +48,25 @@ impl InputsBuilder {
             outfile: None,
         }
     }
-    fn inputfiles(mut self, inputfiles: Vec<std::fs::File>) -> InputsBuilder {
-        self.infiles = Some(inputfiles);
+    fn inputfiles(mut self, inputfiles: Vec<&str>) -> InputsBuilder {
+        self.infiles = Some(
+            inputfiles
+                .iter()
+                .map(|s| std::path::PathBuf::from(s))
+                .collect(),
+        );
         self
     }
-    fn libraries(mut self, libraries: Vec<String>) -> InputsBuilder {
-        self.libs = Some(libraries);
+    fn libraries(mut self, libraries: Vec<&str>) -> InputsBuilder {
+        self.libs = Some(libraries.iter().map(|s| s.to_string()).collect());
         self
     }
-    fn warnings(mut self, warnings: Vec<String>) -> InputsBuilder {
-        self.warnings = Some(warnings);
+    fn warnings(mut self, warnings: Vec<&str>) -> InputsBuilder {
+        self.warnings = Some(warnings.iter().map(|s| s.to_string()).collect());
         self
     }
-    fn output(mut self, file: std::fs::File) -> InputsBuilder {
-        self.outfile = Some(file);
+    fn output(mut self, file: &str) -> InputsBuilder {
+        self.outfile = Some(std::path::PathBuf::from(file));
         self
     }
     fn build(self) -> Inputs {
@@ -173,13 +194,28 @@ fn initialize(save: bool) -> Result<(), String> {
     println!("Run 'compile --nocopy executable' to validate.");
     Ok(())
 }
-fn library(inputs: Inputs) -> Result<(), String> {
-    todo!()
+enum CompileType {
+    Executable,
+    Library,
+    IndependentExecutable,
 }
-fn executable(inputs: Inputs) -> Result<(), String> {
-    todo!()
+impl CompileType {
+    fn to_args(self) -> Vec<String> {
+        let args = match self {
+            CompileType::Executable => [].to_vec(),
+            CompileType::Library => ["-fPIC", "-shared"].to_vec(),
+            CompileType::IndependentExecutable => ["-L./bin", "-leden"].to_vec(),
+        };
+        args.iter().map(|x| x.to_string()).collect()
+    }
 }
-fn library_executable(inputs: Inputs) -> Result<(), String> {
+fn compile(inputs: Inputs, ctypes: CompileType, debug: bool) -> Result<(), String> {
+    let mut args = inputs.to_args();
+    args.append(&mut ctypes.to_args());
+    if debug {
+        args.push("-g".to_string())
+    }
+    
     todo!()
 }
 fn copy_files(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
@@ -190,5 +226,11 @@ fn shell() -> Result<(), String> {
 }
 
 fn main() {
-    println!("Hello, world!");
+    let input = Inputs::builder()
+        .inputfiles(["main.cpp", "blah.h", "foo.hpp", "bar.c"].to_vec())
+        .libraries(["kipr", "z", "m", "pthread"].to_vec())
+        .output(&findemptyfile())
+        .warnings(["all"].to_vec())
+        .build();
+    println!("{:?}", input.to_args());
 }
