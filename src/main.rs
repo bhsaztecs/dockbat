@@ -250,7 +250,10 @@ fn copy_files(from: &std::path::Path, to: &std::path::Path) -> Result<(), String
     Ok(())
 }
 fn shell() -> Result<(), String> {
-    todo!()
+    if let Err(e) = Command::new("ssh").arg("kipr@192.168.125.1").output() {
+        return Err(format!("Error: {}", e));
+    }
+    Ok(())
 }
 
 fn main() {
