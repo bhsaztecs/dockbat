@@ -332,6 +332,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     == 'y',
             )
         }
+        "help" => match args.get(2) {
+            Some(cmd) => match &cmd[..] {
+                "initialize" => {
+                    println!(
+                        "run {} {}, you'll be prompted to save your changes.",
+                        args.get(0).unwrap(),
+                        "initialize"
+                    );
+                    Ok(())
+                }
+                "compile" => {
+                    println!(
+                        "usage: {} compile 1 2 ... 3 ... 4 ...
+	1: {{executable | library | indexe}}: compile type
+	2: (--nosave) and or (--debug): save the output, use debugging symbols
+	3: -l {{list of libraries to link}}
+	4: -w {{list of warnings to use}}
+	3 & 4 can be swapped",
+                        args.get(0).unwrap()
+                    );
+                    Ok(())
+                }
+                "copy" => {
+                    println!(
+                        "usage: {} copy WOMBATFOLDER LOCALFOLDER\n
+                    eg: {} copy Default/Eden $(pwd)",
+                        args.get(0).unwrap(),
+                        args.get(0).unwrap()
+                    );
+                    Ok(())
+                }
+                "shell" => {
+                    println!("shell into wombat");
+                    Ok(())
+                }
+                _ => Err("Invalid Command".into()),
+            },
+            _ => Ok(println!("options: initialize, compile, copy, shell")),
+        },
         _ => Err("InvalidCommand".into()),
     }
 }
