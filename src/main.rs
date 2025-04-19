@@ -4,9 +4,9 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::Command;
 struct Inputs {
+    warnings: Vec<String>,
     infiles: Vec<std::path::PathBuf>,
     libs: Vec<String>,
-    warnings: Vec<String>,
     outfile: std::path::PathBuf,
 }
 impl Inputs {
@@ -15,19 +15,19 @@ impl Inputs {
     }
     fn to_args(self) -> Vec<String> {
         let mut args: Vec<String> = Vec::new();
+        for warning in self.warnings {
+            args.push(format!("-W{}", warning));
+        }
         for infile in self.infiles {
             let path_str = infile.to_string_lossy().to_string();
             if path_str.contains(".h") || path_str.contains(".hpp") {
                 args.push(format!("-I{}", infile.display()));
             } else if path_str.contains(".c") || path_str.contains(".cpp") {
-                args.push(format!("{} ", infile.display()));
+                args.push(format!("{}", infile.display()));
             }
         }
         for lib in self.libs {
             args.push(format!("-l{}", lib));
-        }
-        for warning in self.warnings {
-            args.push(format!("-W{}", warning));
         }
         args.push(format!("-o {}", self.outfile.display()));
         args
@@ -210,12 +210,28 @@ impl CompileType {
     }
 }
 fn compile(inputs: Inputs, ctypes: CompileType, debug: bool) -> Result<(), String> {
-    let mut args = inputs.to_args();
-    args.append(&mut ctypes.to_args());
+    let mut args: Vec<String> = Vec::new();
+    args.extend(
+        [
+            "docker",
+            "run",
+            "-it",
+            "--rm",
+            "--volume",
+            ".develop:/home/kipr:rw",
+            "sillyfreak/wombat-cross",
+            "aarch64-linux-gnu-g++",
+            "-std=c++17",
+        ]
+        .iter()
+        .map(|x| x.to_string()),
+    );
+    args.extend(inputs.to_args());
+    args.extend(ctypes.to_args());
     if debug {
         args.push("-g".to_string())
     }
-    
+    //println!("{}", args.join(" "));
     todo!()
 }
 fn copy_files(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
@@ -229,8 +245,9 @@ fn main() {
     let input = Inputs::builder()
         .inputfiles(["main.cpp", "blah.h", "foo.hpp", "bar.c"].to_vec())
         .libraries(["kipr", "z", "m", "pthread"].to_vec())
-        .output(&findemptyfile())
+        .output("botball_user_program")
         .warnings(["all"].to_vec())
         .build();
-    println!("{:?}", input.to_args());
+    compile(input, CompileType::Executable, true);
+    //println!("{:?}", input.to_args());
 }
