@@ -188,7 +188,6 @@ fn compile(
         print!("{} ", arg);
     }
     println!("");
-    return Ok(());
     let status = Command::new("sudo").args(&args).status()?;
     if !status.success() {
         return Err("Compilation failed".into());
@@ -202,7 +201,6 @@ fn copy_files(to: &Path, from: &Path) -> Result<(), Box<dyn std::error::Error>> 
         from.display(),
         to.display()
     );
-    return Ok(());
     let status = Command::new("ping")
         .arg("-c")
         .arg("1")
@@ -223,7 +221,6 @@ fn copy_files(to: &Path, from: &Path) -> Result<(), Box<dyn std::error::Error>> 
 }
 fn shell() -> Result<(), Box<dyn std::error::Error>> {
     println!("ssh kipr@192.168.125.1");
-    return Ok(());
     let status = Command::new("ssh").arg("kipr@192.168.125.1").status()?;
     if !status.success() {
         return Err("SSH failed".into());
