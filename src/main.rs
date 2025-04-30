@@ -1,19 +1,23 @@
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::path::Path;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+#[derive(Clone, Debug)]
 struct Inputs {
     warnings: Vec<String>,
-    infiles: Vec<std::path::PathBuf>,
+    infiles: Vec<PathBuf>,
     libs: Vec<String>,
-    outfile: std::path::PathBuf,
+    outfile: PathBuf,
 }
+
 impl Inputs {
     fn builder() -> InputsBuilder {
         InputsBuilder::new()
     }
-    fn to_args(self) -> Vec<String> {
+
+    fn to_args(&self) -> Vec<String> {
         let mut args = Vec::new();
 
         args.extend(self.warnings.iter().map(|w| format!("-W{}", w)));
@@ -35,16 +39,17 @@ impl Inputs {
 
 #[derive(Default)]
 struct InputsBuilder {
-    infiles: Option<Vec<std::path::PathBuf>>,
+    infiles: Option<Vec<PathBuf>>,
     libs: Option<Vec<String>>,
     warnings: Option<Vec<String>>,
-    outfile: Option<std::path::PathBuf>,
+    outfile: Option<PathBuf>,
 }
 
 impl InputsBuilder {
     fn new() -> Self {
         Self::default()
     }
+
     fn inputfiles<P: AsRef<Path>>(mut self, inputfiles: Vec<P>) -> Self {
         self.infiles = Some(
             inputfiles
@@ -54,6 +59,7 @@ impl InputsBuilder {
         );
         self
     }
+
     fn libraries<S: AsRef<str>>(mut self, libraries: Vec<S>) -> Self {
         self.libs = Some(
             libraries
@@ -63,6 +69,7 @@ impl InputsBuilder {
         );
         self
     }
+
     fn warnings<S: AsRef<str>>(mut self, warnings: Vec<S>) -> Self {
         self.warnings = Some(
             warnings
@@ -72,10 +79,12 @@ impl InputsBuilder {
         );
         self
     }
+
     fn output<P: AsRef<Path>>(mut self, file: P) -> Self {
         self.outfile = Some(file.as_ref().to_path_buf());
         self
     }
+
     fn build(self) -> Result<Inputs, &'static str> {
         Ok(Inputs {
             infiles: self.infiles.unwrap_or_default(),
@@ -86,50 +95,56 @@ impl InputsBuilder {
     }
 }
 
-fn find_empty_file() -> io::Result<String> {
-    let bin_dir = Path::new("");
+fn find_empty_file() -> io::Result<PathBuf> {
+    let bin_dir = PathBuf::from("bin");
     let current = "out";
     let mut i = 0;
 
     loop {
         let file_path = bin_dir.join(format!("{}{}", current, i));
         if !file_path.exists() {
-            return Ok(file_path.to_string_lossy().into_owned());
+            return Ok(file_path);
         }
         i += 1;
     }
 }
+
+fn run_command(mut command: Command) -> Result<Output, Box<dyn std::error::Error>> {
+    let output = command.output()?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into());
+    }
+    Ok(output)
+}
+
 fn initialize(save: bool) -> Result<(), Box<dyn std::error::Error>> {
     if save {
-        let status = Command::new("git").arg("init").status()?;
-        if !status.success() {
-            return Err("Failed to initialize git repository".into());
-        }
+        let mut cmd = Command::new("git");
+        cmd.arg("init");
+        run_command(cmd)?;
 
-        let status = Command::new("git").arg("add").arg(".").status()?;
-        if !status.success() {
-            return Err("Failed to add files to git".into());
-        }
+        let mut cmd = Command::new("git");
+        cmd.arg("add").arg(".");
+        run_command(cmd)?;
 
-        let status = Command::new("git")
-            .args(&["commit", "-m", "pre-initialize"])
-            .status()?;
-        if !status.success() {
-            return Err("Failed to commit files".into());
-        }
+        let mut cmd = Command::new("git");
+        cmd.args(&["commit", "-m", "pre-initialize"]);
+        run_command(cmd)?;
     }
+
     fs::create_dir_all("bin")?;
-    let botball_path = Path::new("bin").join("botball_user_program");
-    File::create(&botball_path)?;
-    let docker_status = Command::new("docker")
-        .args(&["pull", "sillyfreak/wombat-cross"])
-        .status()?;
-    if !docker_status.success() {
-        return Err("Failed to pull Docker image".into());
-    }
     fs::create_dir_all("src")?;
-    let src_path = Path::new("src").join("main.cpp");
-    let example_path = Path::new("data").join("example.cpp");
+
+    let botball_path = PathBuf::from("bin").join("botball_user_program");
+    File::create(&botball_path)?;
+
+    let mut cmd = Command::new("docker");
+    cmd.args(&["pull", "sillyfreak/wombat-cross"]);
+    run_command(cmd)?;
+
+    let src_path = PathBuf::from("src").join("main.cpp");
+    let example_path = PathBuf::from("data").join("example.cpp");
+
     if example_path.exists() {
         let mut content = String::new();
         File::open(&example_path)?.read_to_string(&mut content)?;
@@ -137,25 +152,28 @@ fn initialize(save: bool) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         return Err("example.cpp not found in data directory".into());
     }
+
     println!("Run 'compile --nocopy executable' to validate.");
     Ok(())
 }
+
+#[derive(Debug, Clone, Copy)]
 enum CompileType {
     Executable,
     Library,
     IndependentExecutable,
 }
+
 impl CompileType {
     fn to_args(self) -> Vec<String> {
         match self {
             CompileType::Executable => vec![],
             CompileType::Library => vec!["-fPIC".into(), "-shared".into()],
-            CompileType::IndependentExecutable => {
-                vec!["-leden".into()]
-            }
+            CompileType::IndependentExecutable => vec!["-leden".into()],
         }
     }
 }
+
 fn compile(
     inputs: Inputs,
     ctype: CompileType,
@@ -167,7 +185,7 @@ fn compile(
         "-it",
         "--rm",
         "--volume",
-        ".develop:/home/kipr:rw",
+        "./develop:/home/kipr:rw",
         "sillyfreak/wombat-cross",
         "aarch64-linux-gnu-g++",
         "-std=c++17",
@@ -178,22 +196,25 @@ fn compile(
     .into_iter()
     .map(String::from)
     .collect::<Vec<_>>();
+
     if debug {
         args.push("-g".into());
     }
     args.extend(inputs.to_args());
     args.extend(ctype.to_args());
+
     print!("sudo ");
     for arg in &args {
         print!("{} ", arg);
     }
-    println!("");
-    let status = Command::new("sudo").args(&args).status()?;
-    if !status.success() {
-        return Err("Compilation failed".into());
-    }
+    println!();
+
+    let mut cmd = Command::new("sudo");
+    cmd.args(&args);
+    run_command(cmd)?;
     Ok(())
 }
+
 fn copy_files(to: &Path, from: &Path) -> Result<(), Box<dyn std::error::Error>> {
     println!("ping -c 1 kipr@192.168.125.1");
     println!(
@@ -201,38 +222,44 @@ fn copy_files(to: &Path, from: &Path) -> Result<(), Box<dyn std::error::Error>> 
         from.display(),
         to.display()
     );
-    let status = Command::new("ping")
-        .arg("-c")
-        .arg("1")
-        .arg("kipr@192.168.125.1")
-        .status()?;
-    if !status.success() {
-        return Err("Ping failed".into());
-    }
-    let status = Command::new("scp")
+
+    let mut ping_command = Command::new("ping");
+    ping_command.args(&["-c", "1", "kipr@192.168.125.1"]);
+    run_command(ping_command)?;
+
+    let mut scp_command = Command::new("scp");
+    scp_command
         .args(&["-r", "-q"])
         .arg(from)
-        .arg(format!("kipr@192.168.125.1:{}", to.display()))
-        .status()?;
-    if !status.success() {
-        return Err("SCP failed".into());
-    }
+        .arg(format!("kipr@192.168.125.1:{}", to.display()));
+    run_command(scp_command)?;
+
     Ok(())
 }
+
 fn shell() -> Result<(), Box<dyn std::error::Error>> {
     println!("ssh kipr@192.168.125.1");
-    let status = Command::new("ssh").arg("kipr@192.168.125.1").status()?;
-    if !status.success() {
-        return Err("SSH failed".into());
-    }
+    let mut cmd = Command::new("ssh");
+    cmd.arg("kipr@192.168.125.1");
+    run_command(cmd)?;
     Ok(())
 }
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args: Vec<String> = env::args().collect();
     match args.get(1).ok_or("No command provided")?.as_str() {
         "compile" => {
             fs::create_dir_all("develop")?;
             fs::create_dir_all("bin")?;
+            let output = if args.contains(&"--nosave".to_string()) {
+                args.retain(|x| x != "--nosave");
+                find_empty_file()?.to_string_lossy().into_owned()
+            } else {
+                "botball_user_program".to_string()
+            };
+
+            File::create(format!("./bin/{}", output))?;
+
             let entries = fs::read_dir(".")?;
             for entry in entries {
                 let entry = entry?;
@@ -244,19 +271,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     {
                         continue;
                     }
-                    Command::new("cp")
-                        .args(&[
-                            "-r",
-                            &path.display().to_string(),
-                            &format!("develop/{}", path.display()),
-                        ])
-                        .status()?;
+                    // Replace fs::copy_dir_all with manual recursive copy
+                    let dest = format!("develop/{}", path.display());
+                    fs::create_dir_all(&dest)?;
+                    for entry in fs::read_dir(&path)? {
+                        let entry = entry?;
+                        let source = entry.path();
+                        let dest = format!(
+                            "develop/{}/{}",
+                            path.display(),
+                            entry.file_name().to_string_lossy()
+                        );
+                        fs::copy(&source, &dest)?;
+                    }
                 } else {
-                    Command::new("cp")
-                        .args(&[&path.display().to_string(), "develop/"])
-                        .status()?;
+                    fs::copy(
+                        &path,
+                        format!("develop/{}", path.file_name().unwrap().to_string_lossy()),
+                    )?;
                 }
             }
+
             let compile_type = match args.get(2).map(String::as_str) {
                 Some("library") => CompileType::Library,
                 Some("indexe") => CompileType::IndependentExecutable,
@@ -270,17 +305,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 false
             };
-            let output = if args.contains(&"--nosave".to_string()) {
-                args.retain(|x| x != "--nosave");
-                find_empty_file()?
-            } else {
-                "bin/botball_user_program".to_string()
-            };
-            let librariesandwarnings = args[3..].to_vec();
 
+            let librariesandwarnings = args[3..].to_vec();
             let mut libraries = Vec::new();
             let mut warnings = Vec::new();
-
             let mut in_lib = false;
             let mut in_warn = false;
 
@@ -303,9 +331,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+
             if libraries.is_empty() {
                 libraries = vec!["m".into(), "pthread".into(), "kipr".into(), "z".into()];
             }
+
             if warnings == vec!["actuallyall"] {
                 warnings = vec![
                     "all",
@@ -337,8 +367,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|x| x.to_string())
                 .collect();
             }
+
             let mut inputfiles: Vec<String> = Vec::new();
             inputfiles.push("./include/*".to_string());
+
             match compile_type {
                 CompileType::Executable => inputfiles.push("./src/*".to_string()),
                 CompileType::Library => {
@@ -352,9 +384,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 CompileType::IndependentExecutable => inputfiles.push("./src/*".to_string()),
             }
+
             let inputs = Inputs::builder()
                 .inputfiles(vec!["src/main.cpp"])
-                .output(Path::new("bin/").join(&output))
+                .output(Path::new("./bin/").join(&output))
                 .libraries(libraries)
                 .warnings(warnings)
                 .build()?;
@@ -364,10 +397,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 format!("./develop/bin/{}", output),
                 format!("./bin/{}", output),
             );
+
             if args.contains(&"--nosave".to_string()) {
-                let _ = fs::remove_file(Path::new("bin/").join(output));
+                let _ = fs::remove_file(Path::new("./bin/").join(output));
             }
             let _ = fs::remove_dir_all("develop");
+
             match (compres, copyres) {
                 (Err(comp), _) => Err(comp),
                 (_, Err(copy)) => Err(copy.into()),
@@ -393,12 +428,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .trim()
                     .to_lowercase()
                     .chars()
-                    .nth(0)
-                    .expect("couldnt read input. try again")
+                    .next()
+                    .ok_or("Could not read input")?
                     == 'y',
             )
         }
-        "help" => match args.get(2) {
+        _ => match args.get(2) {
             Some(cmd) => match &cmd[..] {
                 "initialize" => {
                     println!(
@@ -423,7 +458,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "copy" => {
                     println!(
                         "usage: {} copy WOMBATFOLDER LOCALFOLDER\n
-                    eg: {} copy Default/Eden $(pwd)",
+					eg: {} copy Default/Eden $(pwd)",
                         args.get(0).unwrap(),
                         args.get(0).unwrap()
                     );
@@ -437,6 +472,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             _ => Ok(println!("options: initialize, compile, copy, shell")),
         },
-        _ => Err("InvalidCommand".into()),
     }
 }
