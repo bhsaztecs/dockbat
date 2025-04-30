@@ -24,7 +24,27 @@ impl Inputs {
 
         for infile in &self.infiles {
             let path_str = infile.to_string_lossy();
-            if path_str.ends_with(".h") || path_str.ends_with(".hpp") {
+
+            // Handle wildcards by expanding them
+            if path_str.ends_with("/*") {
+                let dir_path = path_str.trim_end_matches("/*");
+
+                // Add directory as include path
+                args.push(format!("-I{}", dir_path));
+
+                // Add all source files from this directory
+                if let Ok(entries) = std::fs::read_dir(dir_path) {
+                    for entry in entries.filter_map(Result::ok) {
+                        let path = entry.path();
+                        if path.is_file() {
+                            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                            if ext == "c" || ext == "cpp" {
+                                args.push(path.display().to_string());
+                            }
+                        }
+                    }
+                }
+            } else if path_str.ends_with(".h") || path_str.ends_with(".hpp") {
                 args.push(format!("-I{}", infile.display()));
             } else if path_str.ends_with(".c") || path_str.ends_with(".cpp") {
                 args.push(infile.display().to_string());
@@ -32,7 +52,10 @@ impl Inputs {
         }
 
         args.extend(self.libs.iter().map(|l| format!("-l{}", l)));
-        args.push(format!("-o {}", self.outfile.display()));
+
+        args.push("-o".to_string());
+        args.push(self.outfile.display().to_string());
+
         args
     }
 }
@@ -103,7 +126,7 @@ fn find_empty_file() -> io::Result<PathBuf> {
     loop {
         let file_path = bin_dir.join(format!("{}{}", current, i));
         if !file_path.exists() {
-            return Ok(file_path);
+            return Ok(PathBuf::from(format!("{}{}", current, i)));
         }
         i += 1;
     }
@@ -111,12 +134,44 @@ fn find_empty_file() -> io::Result<PathBuf> {
 
 fn run_command(mut command: Command) -> Result<Output, Box<dyn std::error::Error>> {
     let output = command.output()?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).into());
+
+    // Always process and print stdout and stderr
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Format and print compiler output
+    if !stdout.is_empty() {
+        let formatted = format_compiler_output(&stdout);
+        print!("{}", formatted);
     }
+
+    if !stderr.is_empty() {
+        let formatted = format_compiler_output(&stderr);
+        eprint!("{}", formatted);
+    }
+
+    if !output.status.success() {
+        return Err("Command failed - see errors above".into());
+    }
+
     Ok(output)
 }
 
+fn format_compiler_output(output: &str) -> String {
+    // Replace escaped newlines
+    let with_newlines = output.replace("\\n", "\n");
+
+    // Add colors
+    const RED: &str = "\x1b[31m";
+    const YELLOW: &str = "\x1b[33m";
+    const RESET: &str = "\x1b[0m";
+
+    let colored = with_newlines
+        .replace("error:", &format!("{}error:{}", RED, RESET))
+        .replace("warning:", &format!("{}warning:{}", YELLOW, RESET));
+
+    colored
+}
 fn initialize(save: bool) -> Result<(), Box<dyn std::error::Error>> {
     if save {
         let mut cmd = Command::new("git");
@@ -182,7 +237,6 @@ fn compile(
     let mut args = vec![
         "docker",
         "run",
-        "-it",
         "--rm",
         "--volume",
         "./develop:/home/kipr:rw",
@@ -202,13 +256,6 @@ fn compile(
     }
     args.extend(inputs.to_args());
     args.extend(ctype.to_args());
-
-    print!("sudo ");
-    for arg in &args {
-        print!("{} ", arg);
-    }
-    println!();
-
     let mut cmd = Command::new("sudo");
     cmd.args(&args);
     run_command(cmd)?;
@@ -216,13 +263,6 @@ fn compile(
 }
 
 fn copy_files(to: &Path, from: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    println!("ping -c 1 kipr@192.168.125.1");
-    println!(
-        "scp -r -q {} kipr@192.168.125.1:{}",
-        from.display(),
-        to.display()
-    );
-
     let mut ping_command = Command::new("ping");
     ping_command.args(&["-c", "1", "kipr@192.168.125.1"]);
     run_command(ping_command)?;
@@ -238,59 +278,116 @@ fn copy_files(to: &Path, from: &Path) -> Result<(), Box<dyn std::error::Error>> 
 }
 
 fn shell() -> Result<(), Box<dyn std::error::Error>> {
-    println!("ssh kipr@192.168.125.1");
     let mut cmd = Command::new("ssh");
     cmd.arg("kipr@192.168.125.1");
     run_command(cmd)?;
     Ok(())
 }
+fn todev(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<()> {
+    fs::create_dir_all(&dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        if entry.path().to_string_lossy().contains("target")
+            || entry.path().to_string_lossy().contains("git")
+            || entry.path().to_string_lossy().contains("develop")
+        {
+            continue;
+        }
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            todev(entry.path(), dst.as_ref().join(entry.file_name()))?;
+        } else {
+            fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
 
+fn libsnwarns(args: &Vec<String>) -> (Vec<String>, Vec<String>) {
+    let librariesandwarnings = args[3..].to_vec();
+    let mut libraries = Vec::new();
+    let mut warnings = Vec::new();
+    let mut in_lib = false;
+    let mut in_warn = false;
+
+    for arg in librariesandwarnings {
+        match arg.as_str() {
+            "-l" => {
+                in_lib = true;
+                in_warn = false;
+            }
+            "-w" => {
+                in_lib = false;
+                in_warn = true;
+            }
+            arg => {
+                if in_lib {
+                    libraries.push(arg.to_string());
+                } else if in_warn {
+                    warnings.push(arg.to_string());
+                }
+            }
+        }
+    }
+
+    if libraries.is_empty() {
+        libraries = vec!["m".into(), "pthread".into(), "kipr".into(), "z".into()];
+    }
+
+    if warnings == vec!["actuallyall"] {
+        warnings = vec![
+            "all",
+            "extra",
+            "cast-align",
+            "cast-qual",
+            "ctor-dtor-privacy",
+            "disabled-optimization",
+            "format=2",
+            "init-self",
+            "logical-op",
+            "missing-declarations",
+            "missing-include-dirs",
+            "noexcept",
+            "old-style-cast",
+            "overloaded-virtual",
+            "redundant-decls",
+            "shadow",
+            "sign-conversion",
+            "sign-promo",
+            "strict-null-sentinel",
+            "strict-overflow=5",
+            "switch-default",
+            "undef",
+            "error",
+            "no-unused",
+        ]
+        .iter()
+        .map(|x| x.to_string())
+        .collect();
+    }
+    (libraries, warnings)
+}
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args: Vec<String> = env::args().collect();
     match args.get(1).ok_or("No command provided")?.as_str() {
         "compile" => {
-            fs::create_dir_all("develop")?;
-            fs::create_dir_all("bin")?;
+            fs::create_dir_all("./develop/").expect(&format!("{}", line!()));
+            fs::create_dir_all("./bin/").expect(&format!("{}", line!()));
+            let nosave;
             let output = if args.contains(&"--nosave".to_string()) {
                 args.retain(|x| x != "--nosave");
-                find_empty_file()?.to_string_lossy().into_owned()
+                nosave = true;
+                find_empty_file()
+                    .expect(&format!("{}", line!()))
+                    .to_string_lossy()
+                    .into_owned()
             } else {
+                nosave = false;
                 "botball_user_program".to_string()
             };
 
-            File::create(format!("./bin/{}", output))?;
-
-            let entries = fs::read_dir(".")?;
-            for entry in entries {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_dir() {
-                    if path.to_string_lossy().contains("develop")
-                        || path.to_string_lossy().contains("git")
-                        || path.to_string_lossy().contains("target")
-                    {
-                        continue;
-                    }
-                    // Replace fs::copy_dir_all with manual recursive copy
-                    let dest = format!("develop/{}", path.display());
-                    fs::create_dir_all(&dest)?;
-                    for entry in fs::read_dir(&path)? {
-                        let entry = entry?;
-                        let source = entry.path();
-                        let dest = format!(
-                            "develop/{}/{}",
-                            path.display(),
-                            entry.file_name().to_string_lossy()
-                        );
-                        fs::copy(&source, &dest)?;
-                    }
-                } else {
-                    fs::copy(
-                        &path,
-                        format!("develop/{}", path.file_name().unwrap().to_string_lossy()),
-                    )?;
-                }
-            }
+            File::create(format!("./bin/{}", output)).expect(&format!("{}", line!()));
+            todev(".", "./develop/").expect(&format!("{}", line!()));
 
             let compile_type = match args.get(2).map(String::as_str) {
                 Some("library") => CompileType::Library,
@@ -305,68 +402,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 false
             };
-
-            let librariesandwarnings = args[3..].to_vec();
-            let mut libraries = Vec::new();
-            let mut warnings = Vec::new();
-            let mut in_lib = false;
-            let mut in_warn = false;
-
-            for arg in librariesandwarnings {
-                match arg.as_str() {
-                    "-l" => {
-                        in_lib = true;
-                        in_warn = false;
-                    }
-                    "-w" => {
-                        in_lib = false;
-                        in_warn = true;
-                    }
-                    arg => {
-                        if in_lib {
-                            libraries.push(arg.to_string());
-                        } else if in_warn {
-                            warnings.push(arg.to_string());
-                        }
-                    }
-                }
-            }
-
-            if libraries.is_empty() {
-                libraries = vec!["m".into(), "pthread".into(), "kipr".into(), "z".into()];
-            }
-
-            if warnings == vec!["actuallyall"] {
-                warnings = vec![
-                    "all",
-                    "extra",
-                    "cast-align",
-                    "cast-qual",
-                    "ctor-dtor-privacy",
-                    "disabled-optimization",
-                    "format=2",
-                    "init-self",
-                    "logical-op",
-                    "missing-declarations",
-                    "missing-include-dirs",
-                    "noexcept",
-                    "old-style-cast",
-                    "overloaded-virtual",
-                    "redundant-decls",
-                    "shadow",
-                    "sign-conversion",
-                    "sign-promo",
-                    "strict-null-sentinel",
-                    "strict-overflow=5",
-                    "switch-default",
-                    "undef",
-                    "error",
-                    "no-unused",
-                ]
-                .iter()
-                .map(|x| x.to_string())
-                .collect();
-            }
+            let (libraries, warnings) = libsnwarns(&args);
 
             let mut inputfiles: Vec<String> = Vec::new();
             inputfiles.push("./include/*".to_string());
@@ -374,8 +410,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match compile_type {
                 CompileType::Executable => inputfiles.push("./src/*".to_string()),
                 CompileType::Library => {
-                    for file in fs::read_dir("./src")? {
-                        let file = file?;
+                    for file in fs::read_dir("./src").expect(&format!("{}", line!())) {
+                        let file = file.expect(&format!("{}", line!()));
                         let path = file.path();
                         if !path.to_string_lossy().contains("main") {
                             inputfiles.push(path.display().to_string());
@@ -386,25 +422,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let inputs = Inputs::builder()
-                .inputfiles(vec!["src/main.cpp"])
+                .inputfiles(inputfiles)
                 .output(Path::new("./bin/").join(&output))
                 .libraries(libraries)
                 .warnings(warnings)
-                .build()?;
-
-            let compres = compile(inputs, compile_type, debug);
-            let copyres = fs::copy(
+                .build()
+                .expect(&format!("{}", line!()));
+            let compile_result = compile(inputs, compile_type, debug);
+            let copy_result = fs::copy(
                 format!("./develop/bin/{}", output),
                 format!("./bin/{}", output),
             );
 
-            if args.contains(&"--nosave".to_string()) {
-                let _ = fs::remove_file(Path::new("./bin/").join(output));
+            if nosave {
+                let _ = fs::remove_file(Path::new(&format!("./bin/{}", output)[..]));
             }
             let _ = fs::remove_dir_all("develop");
 
-            match (compres, copyres) {
-                (Err(comp), _) => Err(comp),
+            match (compile_result, copy_result) {
+                (Err(_), _) => Err("compile failed".into()),
                 (_, Err(copy)) => Err(copy.into()),
                 _ => Ok(()),
             }
